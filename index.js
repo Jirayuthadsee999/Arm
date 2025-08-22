@@ -9,7 +9,7 @@ import fs from "fs";
 import cron from "node-cron";
 import "dotenv/config";
 
-// ======== CONFIG (แทนค่าตามของคุณ) ========
+// ======== CONFIG ========
 const TOKEN = process.env.DISCORD_TOKEN;
 
 const DEPARTMENT_CHANNELS = {  // ห้องแจ้งเตือนเข้า/ออกเวร
@@ -25,20 +25,19 @@ const DEPARTMENTS = {          // ยศของหน่วยงาน (role 
 };
 
 const DEPARTMENT_IMAGES = {    // โลโก้หน่วยงาน (สำหรับ embed รายงาน/ปุ่ม)
-  // 👉 เปลี่ยนลิงก์รูปให้ตรงของคุณ
-  "ตำรวจ": "https://cdn.discordapp.com/attachments/1385580108739379360/1408306378191409242/1394955799368830996.jpg",
-  "หมอ":   "https://cdn.discordapp.com/attachments/1385580108739379360/1408306378191409242/1394955799368830996.jpg",
-  "สภา":   "https://cdn.discordapp.com/attachments/1385580108739379360/1408306378191409242/1394955799368830996.jpg"
+  "ตำรวจ": "https://cdn.discordapp.com/attachments/xxx/police.jpg",
+  "หมอ":   "https://cdn.discordapp.com/attachments/xxx/doctor.jpg",
+  "สภา":   "https://cdn.discordapp.com/attachments/xxx/council.jpg"
 };
 
-const ADMIN_CHANNEL_ID = "1400060987834368042"; // ห้องแอดมินสำหรับแจ้งเตือน/รายงาน
+const ADMIN_CHANNEL_ID = "1400060987834368042"; // ห้องแอดมิน
 
 const DATA_FILE   = "checkin_data.json";
 const BACKUP_FILE = "checkin_data_backup.json";
 
-const MIN_HOURS        = 3; // ชั่วโมงขั้นต่ำ/วัน
-const MAX_ABSENT_DAYS  = 3; // ขาดเวรได้สูงสุดติดต่อกัน
-const MAX_SHORT_HOURS  = 2; // เตือนได้ 2 ครั้ง ครั้งที่ 3 ปลดยศ
+const MIN_HOURS        = 3;
+const MAX_ABSENT_DAYS  = 3;
+const MAX_SHORT_HOURS  = 2; 
 
 // ================= Client =================
 const client = new Client({
@@ -49,10 +48,10 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages
   ],
-  partials: [Partials.Channel] // ให้ DM ทำงานได้
+  partials: [Partials.Channel]
 });
 
-// ================= จัดการไฟล์ (JSON) =================
+// ================= Data Manager =================
 function ensureDataShape(o) {
   return {
     daily_checkins:   o?.daily_checkins   ?? {},
@@ -62,7 +61,6 @@ function ensureDataShape(o) {
     short_hours_count:o?.short_hours_count?? {}
   };
 }
-
 function backupData() {
   if (fs.existsSync(DATA_FILE)) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
 }
@@ -74,7 +72,6 @@ function loadData() {
     const raw = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
     return ensureDataShape(raw);
   } catch {
-    // ซ่อมไฟล์เสีย
     fs.writeFileSync(DATA_FILE, JSON.stringify(ensureDataShape({}), null, 4));
     return ensureDataShape({});
   }
@@ -89,25 +86,20 @@ function thaiTime() {
   return new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
 }
 function todayKey() {
-  // ใช้คีย์ไทยเพื่อให้เห็นวันที่แบบไทยในรายงาน (เหมือนฝั่ง Python ที่แสดงไทย)
   return new Date().toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok" });
 }
 
 // ================= DM เตือน / ปลดยศ =================
 async function sendWarning(member, msg) {
-  try {
-    await member.send(msg);
-  } catch {
+  try { await member.send(msg); }
+  catch {
     const adminChannel = member.guild.channels.cache.get(ADMIN_CHANNEL_ID);
     if (adminChannel) adminChannel.send(`ไม่สามารถส่ง DM ถึง ${member} ได้: ${msg}`);
   }
 }
-
 async function removeRoleAndReset(member, roleId) {
   const role = member.guild.roles.cache.get(roleId);
-  if (role && member.roles.cache.has(roleId)) {
-    await member.roles.remove(role);
-  }
+  if (role && member.roles.cache.has(roleId)) await member.roles.remove(role);
 
   const uid = member.id.toString();
   delete data.work_hours[uid];
@@ -115,12 +107,10 @@ async function removeRoleAndReset(member, roleId) {
   delete data.short_hours_count[uid];
   saveData(data);
 
-  // DM ผู้ถูกปลดยศ
   try {
-    await member.send(`❌ คุณถูกปลดยศ **${role?.name ?? "ไม่ทราบยศ"}** เนื่องจากเข้าเวรไม่ครบตามกำหนด หรือขาดเวรเกิน ${MAX_ABSENT_DAYS} วัน ข้อมูลถูกรีเซ็ตแล้ว`);
+    await member.send(`❌ คุณถูกปลดยศ **${role?.name ?? "ไม่ทราบยศ"}** เนื่องจากเข้าเวรไม่ครบหรือขาดเวรเกิน ${MAX_ABSENT_DAYS} วัน ข้อมูลถูกรีเซ็ตแล้ว`);
   } catch {}
 
-  // แจ้งแอดมิน
   const adminChannel = member.guild.channels.cache.get(ADMIN_CHANNEL_ID);
   if (adminChannel) {
     const embed = new EmbedBuilder()
@@ -133,7 +123,6 @@ async function removeRoleAndReset(member, roleId) {
 
 // ================= Logic โมดอล (เช็คอิน/เอาท์) =================
 function validateRPName(name) {
-  // เหมือน Python: ต้องมี "_" และ First/Last ตัวแรกพิมพ์ใหญ่ ตัวอักษรอังกฤษล้วน
   if (!name || !name.includes("_")) return false;
   const [first, last] = name.split("_", 2);
   const re = /^[A-Z][a-zA-Z]*$/;
@@ -168,7 +157,15 @@ async function handleCheckin(interaction, action, department) {
     return interaction.followUp({ content: `หมดเวลา! คุณไม่ได้ส่งรูปยืนยันการ${action}เวร`, ephemeral: true });
   }
 
-  const img = collected.first().attachments.first(); // ใช้ URL ภาพจาก Discord
+  const userMsg = collected.first();
+  const img = userMsg.attachments.first();
+
+  // 🔹 ลบข้อความที่ผู้ใช้ส่งรูป
+  try {
+    await userMsg.delete();
+  } catch (err) {
+    console.error("ลบข้อความไม่ได้:", err);
+  }
 
   if (action === "เข้า") {
     if (!data.daily_checkins[today][department].includes(uid)) {
@@ -189,14 +186,13 @@ async function handleCheckin(interaction, action, department) {
 
   saveData(data);
 
-  // ส่งแจ้งในห้องของหน่วย
   const depChannelId = DEPARTMENT_CHANNELS[department];
   const depChannel = interaction.guild.channels.cache.get(depChannelId);
   if (depChannel) {
     const embed = new EmbedBuilder()
       .setTitle(`${action}เวรเรียบร้อย (${department})`)
       .setDescription(`โดย: ${interaction.user}\nชื่อในเกม: \`${name}\`\nเวลา: ${thaiTime()}`)
-      .setColor(action === "เข้า" ? 0x57F287 : 0xED4245) // Green / Red
+      .setColor(action === "เข้า" ? 0x57F287 : 0xED4245)
       .setImage(img.url);
     depChannel.send({ embeds: [embed] });
   }
@@ -204,7 +200,7 @@ async function handleCheckin(interaction, action, department) {
   await interaction.followUp({ content: `บันทึกการ${action}เวรเรียบร้อยแล้ว!`, ephemeral: true });
 }
 
-// ================= รายงานเวร (ข้อความคำสั่ง) =================
+// ================= รายงานเวร =================
 async function sendDepartmentReport(target, guild, dep, roleId, dateLabel) {
   const role = guild.roles.cache.get(roleId);
   const members = role ? role.members : new Map();
@@ -226,13 +222,12 @@ async function sendDepartmentReport(target, guild, dep, roleId, dateLabel) {
   const embed = new EmbedBuilder()
     .setTitle(`รายงานเวร ${dep} (${dateLabel})`)
     .setDescription(desc)
-    .setColor(0x5865F2) // Blue
+    .setColor(0x5865F2)
     .setImage(DEPARTMENT_IMAGES[dep] || null);
 
   await target.send({ embeds: [embed] });
 }
 
-// ================= รายงานอัตโนมัติส่งห้องแอดมิน =================
 async function sendDailyReport(guild) {
   const adminChannel = guild.channels.cache.get(ADMIN_CHANNEL_ID);
   if (!adminChannel) return;
@@ -242,14 +237,12 @@ async function sendDailyReport(guild) {
   }
 }
 
-// ================= Interaction (ปุ่ม/โมดอล) =================
+// ================= Interaction =================
 client.on(Events.InteractionCreate, async (interaction) => {
-  // ปุ่ม
   if (interaction.isButton()) {
     const [prefix, department, act] = interaction.customId.split("_");
     if (prefix !== "checkin") return;
 
-    // ต้องมี Role หน่วยงานนั้น ๆ ถึงจะกดได้
     const roleId = DEPARTMENTS[department];
     if (!roleId || !interaction.member.roles.cache.has(roleId)) {
       return interaction.reply({ content: "คุณไม่มีสิทธิ์กดปุ่มนี้!", ephemeral: true });
@@ -257,37 +250,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     const modal = new ModalBuilder()
       .setCustomId(`modal_${department}_${act}`)
-      .setTitle(`${act === "in" ? "เข้า" : "ออก"}เวร (${department})`);
-
-    const nameInput = new TextInputBuilder()
-      .setCustomId("nameInput")
-      .setLabel("ชื่อในเกม (Firstname_Lastname)")
-      .setPlaceholder("ตัวอย่าง: Firstname_Lastname")
-      .setStyle(TextInputStyle.Short);
-
-    const row = new ActionRowBuilder().addComponents(nameInput);
-    modal.addComponents(row);
+      .setTitle(`${act === "in" ? "เข้า" : "ออก"}เวร (${department})`)
+      .addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("nameInput")
+          .setLabel("ชื่อในเกม (Firstname_Lastname)")
+          .setPlaceholder("ตัวอย่าง: Firstname_Lastname")
+          .setStyle(TextInputStyle.Short)
+      ));
 
     await interaction.showModal(modal);
   }
 
-  // โมดอล
   if (interaction.isModalSubmit()) {
     const [prefix, department, act] = interaction.customId.split("_");
     if (prefix !== "modal") return;
     const action = act === "in" ? "เข้า" : "ออก";
-    try {
-      await handleCheckin(interaction, action, department);
-    } catch (e) {
-      console.error(e);
-      if (!interaction.replied) {
-        await interaction.reply({ content: "เกิดข้อผิดพลาดระหว่างบันทึกข้อมูล", ephemeral: true });
-      }
-    }
+    await handleCheckin(interaction, action, department);
   }
 });
 
-// ================= คำสั่งข้อความ (!รายงานเวร / !ตำรวจ / !หมอ / !สภา) =================
+// ================= คำสั่งข้อความ =================
 client.on(Events.MessageCreate, async (msg) => {
   if (!msg.guild || msg.author.bot) return;
   if (!msg.content.startsWith("!")) return;
@@ -322,8 +305,7 @@ client.on(Events.MessageCreate, async (msg) => {
   }
 });
 
-// ================= Reset เที่ยงคืน + รายงานอัตโนมัติ =================
-// รันทุก 00:00 น. ตามโซนเวลาเอเชีย/กรุงเทพ
+// ================= Reset เที่ยงคืน =================
 cron.schedule("0 0 * * *", async () => {
   for (const guild of client.guilds.cache.values()) {
     for (const [dep, roleId] of Object.entries(DEPARTMENTS)) {
@@ -334,7 +316,6 @@ cron.schedule("0 0 * * *", async () => {
         const uid = member.id.toString();
         const hours = data.work_hours[uid] || 0;
 
-        // เช็คชั่วโมง
         if (hours < MIN_HOURS) {
           data.short_hours_count[uid] = (data.short_hours_count[uid] || 0) + 1;
           if (data.short_hours_count[uid] >= (MAX_SHORT_HOURS + 1)) {
@@ -347,7 +328,6 @@ cron.schedule("0 0 * * *", async () => {
           data.short_hours_count[uid] = 0;
         }
 
-        // เช็คขาดเวร
         if (hours === 0) {
           data.absent_count[uid] = (data.absent_count[uid] || 0) + 1;
         } else {
@@ -359,13 +339,10 @@ cron.schedule("0 0 * * *", async () => {
           continue;
         }
 
-        // รีเซตชั่วโมงของวันนั้น
         data.work_hours[uid] = 0;
       }
     }
     saveData(data);
-
-    // ส่งรายงานประจำวันไปห้องแอดมิน (เหมือน Python)
     await sendDailyReport(guild);
   }
 }, { timezone: "Asia/Bangkok" });
